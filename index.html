@@ -2882,295 +2882,245 @@ cont.innerHTML = "Error loading data";
 }    
     
 
-async function withdrawStake(index, btn){
 
-if(window.txPending) return;
-window.txPending = true;
+async function withdrawStake(index, btn) {
+    if (window.txPending) return;
 
-try{
-
-    if(!contract || !userAddress){
+    if (!contract || !signer || !userAddress || !provider) {
         alert("Wallet not connected");
         return;
     }
 
-    // 🔥 GAS CHECK
-    const balance = await provider.getBalance(userAddress);
+    window.txPending = true;
 
-    if(balance.eq(0)){
-        alert("BNB required for gas");
-        speak("Please add B N B for gas");
+    try {
+        const balance = await provider.getBalance(userAddress);
+
+        if (balance.eq(0)) {
+            alert("BNB required for gas");
+            speak("Please add B N B for gas");
+            return;
+        }
+
+        if (btn) {
+            btn.disabled = true;
+            btn.innerText = "Processing...";
+        }
+
+        speak("Withdraw request sent. Please confirm in your wallet");
+
+        const tx = await contract.connect(signer).withdrawPrincipal(index);
+        await tx.wait();
+
+        if (typeof launchFireworks === "function") launchFireworks();
+
+        speak("Withdraw successful");
+        alert("Withdraw Successful");
+
+        if (typeof refreshData === "function") await refreshData();
+
+    } catch (e) {
+        console.error("Withdraw error:", e);
+
+        if (e.code === 4001 || e.code === "ACTION_REJECTED") {
+            alert("Transaction cancelled");
+        } else {
+            alert("Withdraw failed. Check transaction status before retrying.");
+        }
+    } finally {
+        window.txPending = false;
+
+        if (btn) {
+            btn.disabled = false;
+            btn.innerText = "Withdraw Principal";
+        }
+    }
+}
+
+         
+
+async function buyDMX() {
+    if (window.txPending) return;
+
+    if (!contract || !signer || !userAddress || !provider) {
+        alert("Wallet not connected");
         return;
     }
 
-    if(btn){
-        btn.disabled = true;
-        btn.innerText = "Processing...";
+    const inputEl = document.getElementById("buyUSDT");
+    if (!inputEl) return;
+
+    const amtInput = inputEl.value.trim();
+
+    if (!amtInput || !/^\d+(\.\d+)?$/.test(amtInput) || Number(amtInput) <= 0) {
+        alert("Enter valid USDT amount");
+        return;
     }
 
-    speak("Withdraw request sent. Please confirm in your wallet");
+    window.txPending = true;
 
-    const tx = await contract.withdrawPrincipal(index);
-    await tx.wait();
+    try {
+        const balance = await provider.getBalance(userAddress);
 
-    // 🎆 SUCCESS
-    launchFireworks();
-    speak("Withdraw successful");
+        if (balance.eq(0)) {
+            alert("BNB required for gas fees");
+            speak("Please add B N B for gas");
+            return;
+        }
 
-    alert("Withdraw Successful");
+        const usdtAddr = await contract.usdt();
 
-    refreshData();
-
-}catch(e){
-    console.log(e);
-    alert("Withdraw Failed");
-}
-
-if(btn){
-    btn.disabled = false;
-    btn.innerText = "Withdraw Principal";
-}
-
-window.txPending = false;
-}
-         
-    
- async function buyDMX(){  
-
-    if (window.txPending) return;  
-
-    if(!contract || !userAddress){  
-        alert("Wallet not connected");  
-        return;  
-    }  
-
-    const balance = await provider.getBalance(userAddress);  
-
-    if(balance.eq(0)){  
-        alert("BNB required for gas fees");  
-        speak("Please add B N B for gas");  
-        return;  
-    }  
-
-    const inputEl = document.getElementById("buyUSDT");
-    if(!inputEl) return;
-
-    const amtInput = inputEl.value.trim();  
-
-    if(!amtInput || isNaN(amtInput)){  
-        return alert("Enter valid USDT amount");  
-    }  
-
-    const amt = parseFloat(amtInput);  
-
-    if(amt <= 0){  
-        return alert("Amount must be greater than 0");  
-    }  
-
-    window.txPending = true;  
-
-    try{  
-
-        speak("Buy request sent. Please confirm in your wallet.");
-
-        const usdtAddr = await contract.usdt();  
-
-        const usdt = new ethers.Contract(  
-            usdtAddr,  
-            [  
-                "function approve(address,uint256)",  
+        const usdt = new ethers.Contract(
+            usdtAddr,
+            [
+                "function approve(address,uint256) returns (bool)",
                 "function allowance(address,address) view returns(uint256)",
                 "function balanceOf(address) view returns(uint256)"
-            ],  
-            signer  
-        );  
+            ],
+            signer
+        );
 
-        const amountWei = ethers.utils.parseUnits(amt.toString(),18);  
+        const amountWei = ethers.utils.parseUnits(amtInput, 18);
 
-        // 🔥 USDT BALANCE CHECK
         const usdtBal = await usdt.balanceOf(userAddress);
 
-        if(usdtBal.lt(amountWei)){
-            alert("❌ Not enough USDT balance");
+        if (usdtBal.lt(amountWei)) {
+            alert("Not enough USDT balance");
             speak("Not enough U S D T balance");
             return;
         }
 
-        const allowance = await usdt.allowance(userAddress, STAKE_ADDR);  
+        const allowance = await usdt.allowance(userAddress, STAKE_ADDR);
 
-        if(allowance.lt(amountWei)){  
+        if (allowance.lt(amountWei)) {
+            alert("Approving USDT. Please confirm in your wallet.");
 
-            alert("Approving USDT...");
+            const approveTx = await usdt.approve(
+                STAKE_ADDR,
+                ethers.constants.MaxUint256
+            );
 
-            const approveTx = await usdt.approve(  
-                STAKE_ADDR,  
-                ethers.constants.MaxUint256  
-            );  
+            await approveTx.wait();
+        }
 
-            await approveTx.wait();  
-        }  
+        speak("Buy request sent. Please confirm in your wallet.");
 
-        const tx = await contract.buyDMX(amountWei);  
-        await tx.wait();  
+        const tx = await contract.connect(signer).buyDMX(amountWei);
+        await tx.wait();
 
-        // 🎆 SUCCESS
-        launchFireworks();
+        if (typeof launchFireworks === "function") launchFireworks();
 
         speak("Purchase successful");
+        alert("DMX Purchased Successfully");
 
-        alert("DMX Purchased Successfully 🚀");  
+        inputEl.value = "";
 
-        inputEl.value = "";  
+        if (typeof refreshData === "function") await refreshData();
 
-        refreshData();
+    } catch (e) {
+        console.error("Buy DMX error:", e);
 
-    }catch(e){  
-
-        console.error(e);  
-
-        if(e.code === 4001){  
-            alert("Transaction cancelled");  
-        }else{  
-            alert("Please try again");  
-        }  
-
-    }finally{  
-
-        window.txPending = false;  
-    }  
+        if (e.code === 4001 || e.code === "ACTION_REJECTED") {
+            alert("Transaction cancelled");
+        } else {
+            alert("Buy failed or transaction status is unconfirmed. Check your wallet or block explorer.");
+        }
+    } finally {
+        window.txPending = false;
+    }
 }
 
-async function sellDMX(){  
 
-    if (window.txPending) return;  
 
-    if(!contract || !userAddress){  
-        alert("Wallet not connected");  
-        return;  
-    }  
+async function buyDMX() {
+    if (window.txPending) return;
 
-    const balance = await provider.getBalance(userAddress);  
+    if (!contract || !signer || !userAddress || !provider) {
+        alert("Wallet not connected");
+        return;
+    }
 
-    if(balance.eq(0)){  
-        alert("BNB required for gas fees");  
-        speak("Please add B N B for gas");  
-        return;  
-    }  
-
-    const inputEl = document.getElementById("sellDMXAmount");
-    if(!inputEl) return;
+    const inputEl = document.getElementById("buyUSDT");
+    if (!inputEl) return;
 
     const amtInput = inputEl.value.trim();
 
-    if(!amtInput || isNaN(amtInput)){  
-        return alert("Enter valid DMX amount");  
-    }  
+    if (!amtInput || !/^\d+(\.\d+)?$/.test(amtInput) || Number(amtInput) <= 0) {
+        alert("Enter valid USDT amount");
+        return;
+    }
 
-    const amt = parseFloat(amtInput);  
+    window.txPending = true;
 
-    if(amt <= 0){  
-        return alert("Amount must be greater than 0");  
-    }  
+    try {
+        const balance = await provider.getBalance(userAddress);
 
-    window.txPending = true;  
-
-    try{  
-
-        speak("Sell request sent. Please confirm in your wallet.");
-
-        const dmxAddr = await contract.dmx();  
-
-        const dmx = new ethers.Contract(  
-            dmxAddr,  
-            [  
-                "function approve(address,uint256)",  
-                "function allowance(address,address) view returns(uint256)",
-                "function balanceOf(address) view returns(uint256)"
-            ],  
-            signer  
-        );  
-
-        const amountWei = ethers.utils.parseUnits(amt.toString(),18);  
-
-        // 🔥 DMX BALANCE CHECK
-        const dmxBal = await dmx.balanceOf(userAddress);
-
-        if(dmxBal.lt(amountWei)){
-            alert("❌ Not enough DMX balance");
-            speak("Not enough D M X balance");
+        if (balance.eq(0)) {
+            alert("BNB required for gas fees");
+            speak("Please add B N B for gas");
             return;
         }
 
-        // 🔥 APPROVAL CHECK
-        const allowance = await dmx.allowance(userAddress, STAKE_ADDR);  
+        const usdtAddr = await contract.usdt();
 
-        if(allowance.lt(amountWei)){  
+        const usdt = new ethers.Contract(
+            usdtAddr,
+            [
+                "function approve(address,uint256) returns (bool)",
+                "function allowance(address,address) view returns(uint256)",
+                "function balanceOf(address) view returns(uint256)"
+            ],
+            signer
+        );
 
-            alert("Approving DMX...");
+        const amountWei = ethers.utils.parseUnits(amtInput, 18);
 
-            const approveTx = await dmx.approve(  
-                STAKE_ADDR,  
-                ethers.constants.MaxUint256  
-            );  
+        const usdtBal = await usdt.balanceOf(userAddress);
 
-            await approveTx.wait();  
-        }  
-
-        // =========================
-        // 🔥 ONLY CHANGE — MODE SWITCH
-        // =========================
-
-        let tx;
-
-        try{
-
-            const isPancake = await contract.pancakeSwapEnabled();
-
-            if(isPancake){
-
-                // 🔥 PANCAKE SELL
-                tx = await contract.swapDMXtoUSDT(amountWei);
-
-            }else{
-
-                // 🟢 CONTRACT SELL
-                tx = await contract.sellDMX(amountWei);
-
-            }
-
-        }catch(e){
-
-            // fallback safety
-            tx = await contract.sellDMX(amountWei);
+        if (usdtBal.lt(amountWei)) {
+            alert("Not enough USDT balance");
+            speak("Not enough U S D T balance");
+            return;
         }
 
-        await tx.wait();  
+        const allowance = await usdt.allowance(userAddress, STAKE_ADDR);
 
-        // 🎆 SUCCESS
-        launchFireworks();
+        if (allowance.lt(amountWei)) {
+            alert("Approving USDT. Please confirm in your wallet.");
 
-        speak("Sell successful");
+            const approveTx = await usdt.approve(
+                STAKE_ADDR,
+                ethers.constants.MaxUint256
+            );
 
-        alert("DMX Sold Successfully 💰");  
+            await approveTx.wait();
+        }
 
-        inputEl.value = "";  
+        speak("Buy request sent. Please confirm in your wallet.");
 
-        refreshData();
+        const tx = await contract.connect(signer).buyDMX(amountWei);
+        await tx.wait();
 
-    }catch(e){  
+        if (typeof launchFireworks === "function") launchFireworks();
 
-        console.error(e);  
+        speak("Purchase successful");
+        alert("DMX Purchased Successfully");
 
-        if(e.code === 4001){  
-            alert("Transaction cancelled");  
-        }else{  
-            alert("Please try again");  
-        }  
+        inputEl.value = "";
 
-    }finally{  
+        if (typeof refreshData === "function") await refreshData();
 
-        window.txPending = false;  
-    }  
+    } catch (e) {
+        console.error("Buy DMX error:", e);
+
+        if (e.code === 4001 || e.code === "ACTION_REJECTED") {
+            alert("Transaction cancelled");
+        } else {
+            alert("Buy failed or transaction status is unconfirmed. Check your wallet or block explorer.");
+        }
+    } finally {
+        window.txPending = false;
+    }
 }
             
           
