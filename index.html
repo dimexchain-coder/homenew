@@ -997,7 +997,7 @@ View
 <script>  
     
 import { createAppKit } from "@reown/appkit/react";
-import { wagmiAdapter, projectId } from "@/config/wagmi";
+import { wagmiAdapter } from "@/config/wagmi";
 import { getAccount, getBalance, writeContract, waitForTransactionReceipt } from "@wagmi/core";
 import { ethers } from "ethers";
 
@@ -1065,12 +1065,12 @@ window.open("https://bscscan.com/address/" + addr, "_blank");
 ];
 
 
-  // ==============================
-// 🔹 REOWN APPKIT INITIALIZATION
+// ==============================
+// 🔹 REOWN APPKIT INITIALIZATION (PROJECT ID ADDED DIRECTLY)
 // ==============================
 const appKit = createAppKit({
   adapters: [wagmiAdapter],
-  projectId,
+  projectId: "1885ad435015158bf203263156175c91",
   networks: wagmiAdapter.networks,
   defaultNetwork: wagmiAdapter.networks[0],
 });
