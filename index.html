@@ -1554,157 +1554,213 @@ if (capPercent) {
     }
 }
   
-// ==============================
-// 🔹 OPEN CLAIM BOX (FINAL FIXED)
-// ==============================
-async function openClaimBox(){
 
-    if(!contract || !signer || !userAddress){
-        alert("Wallet not connected");
-        return;
+/* =========================================
+   CLAIM HELPERS - USE EXISTING APPKIT
+========================================= */
+
+async function ensureClaimWallet() {
+    let account = getAccount(wagmiAdapter.wagmiConfig);
+
+    if (!account.isConnected || !account.address) {
+        await appKit.open();
+        showToast("Connect your wallet, then try again.", "#444");
+        return false;
     }
 
+    // Reuse the existing connection function to initialise
+    // provider, signer and staking contract.
+    await connectWallet();
+
+    account = getAccount(wagmiAdapter.wagmiConfig);
+
+    if (
+        !account.isConnected ||
+        !account.address ||
+        !provider ||
+        !signer ||
+        !contract ||
+        !userAddress
+    ) {
+        showToast("Wallet connection not ready. Try again.", "#dc2626");
+        return false;
+    }
+
+    if (account.address.toLowerCase() !== userAddress.toLowerCase()) {
+        showToast("Wallet account changed. Reconnect and try again.", "#dc2626");
+        return false;
+    }
+
+    const network = await provider.getNetwork();
+
+    if (network.chainId !== 56) {
+        showToast("Please select BNB Smart Chain.", "#dc2626");
+        return false;
+    }
+
+    return true;
+}
+
+
+/* =========================================
+   OPEN CLAIM BOX
+========================================= */
+
+async function openClaimBox() {
     const modal = document.getElementById("claimModal");
-    if(modal){
+
+    if (modal) {
         modal.classList.remove("hidden");
         modal.classList.add("flex");
     }
 
-    try{
+    try {
+        const ready = await ensureClaimWallet();
+        if (!ready) return;
 
-        // ✅ USE GLOBAL ADDRESS
         const data = await contract.getDashboard(userAddress);
         const stats = data[0];
+        const rawClaim = stats[7];
 
-        const rawClaim = stats[7] || 0;
-        const dmx = Number(ethers.utils.formatEther(rawClaim));
+        const dmx = Number(
+            ethers.utils.formatEther(rawClaim)
+        );
 
-        document.getElementById("modalDMX").innerText =
-            dmx.toFixed(2) + " DMX";
+        const modalDMX = document.getElementById("modalDMX");
+        if (modalDMX) {
+            modalDMX.innerText = dmx.toFixed(2) + " DMX";
+        }
 
-        try{
+        try {
             const usdt = await contract.getUSDTFromDMX(rawClaim);
+            const modalUSDT = document.getElementById("modalUSDT");
 
-            document.getElementById("modalUSDT").innerText =
-                "≈ " + Number(ethers.utils.formatEther(usdt)).toFixed(2) + " USDT";
-        }catch{
-            document.getElementById("modalUSDT").innerText = "≈ -- USDT";
+            if (modalUSDT) {
+                modalUSDT.innerText =
+                    "≈ " +
+                    Number(ethers.utils.formatEther(usdt)).toFixed(2) +
+                    " USDT";
+            }
+        } catch (e) {
+            const modalUSDT = document.getElementById("modalUSDT");
+            if (modalUSDT) modalUSDT.innerText = "≈ -- USDT";
         }
 
         const msgBox = document.getElementById("txMessageBox");
-        if(msgBox){
+
+        if (msgBox) {
             msgBox.style.display = "block";
             msgBox.innerText = "Confirm in your wallet.";
         }
 
-        setTimeout(()=>{
-            speak(
-                "You have " + dmx.toFixed(2) + " D M X reward. " +
-                "Please confirm in your wallet."
-            );
-        },300);
+        setTimeout(() => {
+            if (typeof speak === "function") {
+                speak(
+                    "You have " + dmx.toFixed(2) +
+                    " D M X reward. Please confirm in your wallet."
+                );
+            }
+        }, 300);
 
-    }catch(e){
-        console.log("Claim modal error", e);
+    } catch (e) {
+        console.error("Claim modal error:", e);
 
-        document.getElementById("modalDMX").innerText = "0 DMX";
-        document.getElementById("modalUSDT").innerText = "≈ 0 USDT";
+        const modalDMX = document.getElementById("modalDMX");
+        const modalUSDT = document.getElementById("modalUSDT");
+
+        if (modalDMX) modalDMX.innerText = "0 DMX";
+        if (modalUSDT) modalUSDT.innerText = "≈ 0 USDT";
     }
 }
 
 
-// ==============================
-// 🔹 CLOSE CLAIM BOX
-// ==============================
-function closeClaimBox(){
+/* =========================================
+   CLOSE CLAIM BOX
+========================================= */
 
+function closeClaimBox() {
     const modal = document.getElementById("claimModal");
-    if(!modal) return;
 
-    modal.classList.add("hidden");
-    modal.classList.remove("flex");
+    if (modal) {
+        modal.classList.add("hidden");
+        modal.classList.remove("flex");
+    }
 
-    if(window.speechSynthesis){
-        speechSynthesis.cancel();
+    if (window.speechSynthesis) {
+        window.speechSynthesis.cancel();
     }
 
     const msgBox = document.getElementById("txMessageBox");
-    if(msgBox){
+
+    if (msgBox) {
         msgBox.innerText = "";
         msgBox.style.display = "none";
     }
 }
 
 
-// ==============================
-// 🔥 CLAIM DMX (FINAL)
-// ==============================
-async function claimDMX(event){
+/* =========================================
+   CLAIM DMX
+========================================= */
 
-    if(window.txPending) return;
+async function claimDMX(event) {
+    if (window.txPending) return;
     window.txPending = true;
 
     const btn = event?.currentTarget;
 
-    try{
+    try {
+        showToast("⏳ Checking wallet...", "#444");
 
-        // 🔥 INSTANT MESSAGE
-        showToast("⏳ Opening wallet...", "#444");
+        const ready = await ensureClaimWallet();
+        if (!ready) return;
 
-        if(!contract || !signer || !userAddress){
-            showToast("Connect wallet first", "#dc2626");
-            return;
-        }
-
-        // 🔥 GAS CHECK
         const balance = await provider.getBalance(userAddress);
 
-        if(balance.eq(0)){
+        if (balance.eq(0)) {
             showToast("⚠️ BNB required for gas", "#dc2626");
-            speak("Please add B N B for gas");
+
+            if (typeof speak === "function") {
+                speak("Please add B N B for gas");
+            }
             return;
         }
 
-        if(btn){
+        if (btn) {
             btn.disabled = true;
             btn.innerText = "Processing...";
         }
 
-        showToast("⏳ Waiting for confirmation...", "#444");
+        showToast("⏳ Confirm transaction in your wallet...", "#444");
 
         const tx = await contract.claim();
         await tx.wait();
 
-        // 🔥 SUCCESS
         launchFireworks();
         showToast("💰 Claim Successful", "#16a34a");
 
-        speak("Claim successful");
+        if (typeof speak === "function") speak("Claim successful");
 
-        if(btn){
-            btn.innerText = "✅ Success";
-        }
+        if (btn) btn.innerText = "✅ Success";
 
-        setTimeout(()=>{
+        setTimeout(() => {
             closeClaimBox();
-            refreshData();
-        },1200);
+            if (typeof refreshData === "function") refreshData();
+        }, 1200);
 
-    }catch(err){
+    } catch (err) {
+        console.error("Claim DMX error:", err);
 
-        console.log(err);
-
-        if(err.code === 4001){
+        if (err.code === 4001 || err.code === "ACTION_REJECTED") {
             showToast("❌ Transaction cancelled", "#dc2626");
-        }else{
+        } else {
             showToast("❌ Claim failed", "#dc2626");
         }
 
-    }finally{
-
+    } finally {
         window.txPending = false;
 
-        if(btn){
+        if (btn) {
             btn.disabled = false;
             btn.innerText = "Claim Now";
         }
@@ -1712,130 +1768,144 @@ async function claimDMX(event){
 }
 
 
+/* =========================================
+   CLAIM USDT
+========================================= */
 
-// ==============================
-// 🔥 CLAIM USDT (FINAL)
-// ==============================
-async function claimUSDT(event){
-
-    if(window.txPending) return;
+async function claimUSDT(event) {
+    if (window.txPending) return;
     window.txPending = true;
 
     const btn = event?.currentTarget;
 
-    try{
+    try {
+        showToast("⏳ Checking wallet...", "#444");
 
-        // 🔥 INSTANT MESSAGE
-        showToast("⏳ Opening wallet...", "#444");
+        const ready = await ensureClaimWallet();
+        if (!ready) return;
 
-        if(!contract || !signer || !userAddress){
-            showToast("Connect wallet first", "#dc2626");
-            return;
-        }
-
-        // 🔥 GAS CHECK
         const balance = await provider.getBalance(userAddress);
 
-        if(balance.eq(0)){
+        if (balance.eq(0)) {
             showToast("⚠️ BNB required for gas", "#dc2626");
-            speak("Please add B N B for gas");
+
+            if (typeof speak === "function") {
+                speak("Please add B N B for gas");
+            }
             return;
         }
 
-        if(btn){
+        if (btn) {
             btn.disabled = true;
             btn.innerText = "Processing...";
         }
 
-        showToast("⏳ Waiting for confirmation...", "#444");
+        showToast("⏳ Confirm transaction in your wallet...", "#444");
 
         const tx = await contract.claimUSDT();
         await tx.wait();
 
-        // 🔥 SUCCESS
         launchFireworks();
         showToast("💵 USDT Sent", "#16a34a");
 
-        speak("U S D T claim successful");
-
-        if(btn){
-            btn.innerText = "✅ Success";
+        if (typeof speak === "function") {
+            speak("U S D T claim successful");
         }
 
-        setTimeout(()=>{
+        if (btn) btn.innerText = "✅ Success";
+
+        setTimeout(() => {
             closeClaimBox();
-            refreshData();
-        },1200);
+            if (typeof refreshData === "function") refreshData();
+        }, 1200);
 
-    }catch(err){
+    } catch (err) {
+        console.error("Claim USDT error:", err);
 
-        console.log(err);
-
-        if(err.code === 4001){
+        if (err.code === 4001 || err.code === "ACTION_REJECTED") {
             showToast("❌ Transaction cancelled", "#dc2626");
-        }else{
+        } else {
             showToast("❌ Claim failed", "#dc2626");
         }
 
-    }finally{
-
+    } finally {
         window.txPending = false;
 
-        if(btn){
+        if (btn) {
             btn.disabled = false;
             btn.innerText = "CLAIM USDT";
         }
     }
 }
 
-async function claimLive(event){
 
-    if(window.txPending) return;
+/* =========================================
+   LIVE SWAP
+========================================= */
+
+async function claimLive(event) {
+    if (window.txPending) return;
     window.txPending = true;
 
     const btn = event?.currentTarget;
 
-    try{
+    try {
+        showToast("⏳ Checking wallet...", "#444");
 
-        if(!contract || !userAddress){
-            alert("Wallet not connected");
+        const ready = await ensureClaimWallet();
+        if (!ready) return;
+
+        const balance = await provider.getBalance(userAddress);
+
+        if (balance.eq(0)) {
+            showToast("⚠️ BNB required for gas", "#dc2626");
             return;
         }
 
         const data = await contract.getDashboard(userAddress);
         const stats = data[0];
+        const amount = stats[7];
 
-        const amount = stats[7]; // pending DMX
-
-        if(amount == 0){
-            alert("No rewards");
+        if (amount.isZero ? amount.isZero() : amount == 0) {
+            showToast("No rewards available", "#dc2626");
             return;
         }
 
-        if(btn){
+        if (btn) {
             btn.disabled = true;
             btn.innerText = "Processing...";
         }
 
+        showToast("⏳ Confirm swap in your wallet...", "#444");
+
         const tx = await contract.swapDMXtoUSDT(amount);
         await tx.wait();
 
-        alert("🔥 Live Swap Success");
+        showToast("🔥 Live Swap Success", "#16a34a");
 
-        refreshData();
+        if (typeof refreshData === "function") {
+            await refreshData();
+        }
 
-    }catch(e){
-        console.log(e);
-        alert("Swap Failed");
+    } catch (e) {
+        console.error("Live swap error:", e);
+
+        if (e.code === 4001 || e.code === "ACTION_REJECTED") {
+            showToast("❌ Transaction cancelled", "#dc2626");
+        } else {
+            showToast("❌ Swap failed", "#dc2626");
+        }
+
+    } finally {
+        window.txPending = false;
+
+        if (btn) {
+            btn.disabled = false;
+            btn.innerText = "🔥 LIVE";
+        }
     }
+}
 
-    if(btn){
-        btn.disabled = false;
-        btn.innerText = "🔥 LIVE";
-    }
-
-    window.txPending = false;
-}    
 
 // ==============================
 // LIVE USDT CALCULATOR (REQUIRED)
