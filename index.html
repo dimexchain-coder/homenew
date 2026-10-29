@@ -3210,150 +3210,209 @@ if(document.readyState === "complete" || document.readyState === "interactive"){
 }
       
     
-window.restake = async function() {  
 
-    if (window.txPending) return;  
+window.restake = async function() {
+    if (window.txPending) return;
 
-    if (maintenanceMode){  
-        alert("Platform under maintenance");  
-        return;  
-    }  
+    if (maintenanceMode) {
+        alert("Platform under maintenance");
+        return;
+    }
 
-    if (!contract || !userAddress){  
-        alert("Wallet not connected");  
-        return;  
-    }  
+    if (!contract || !signer || !userAddress || !provider) {
+        alert("Wallet not connected");
+        return;
+    }
 
-    const btn = document.getElementById("restakeBtn");  
-    if(!btn) return;  
+    const btn = document.getElementById("restakeBtn");
+    if (!btn) return;
 
-    const originalText = "Restake + 5% Bonus";  
+    const originalText = "Restake + 5% Bonus";
 
-    let reminder;
+    let reminder = null;
+    let timeoutId = null;
+    let txSubmitted = false;
 
-    try {  
+    window.txPending = true;
 
-        window.txPending = true;  
-
-        // 🔊 VOICE INIT
-        if(!window.voiceUnlocked){
+    try {
+        if (!window.voiceUnlocked) {
             speak("Starting transaction");
             window.voiceUnlocked = true;
         }
 
         speak("Please confirm restake in your wallet");
 
-        // 🔘 UI
-        btn.disabled = true;  
-        btn.innerText = "Waiting...";  
+        btn.disabled = true;
+        btn.innerText = "Waiting...";
 
-        // ⛽ BNB CHECK
-        const balance = await provider.getBalance(userAddress);  
+        const signerAddress = await signer.getAddress();
 
-        if(balance.eq(0)){  
-            alert("BNB not available for gas");  
-            speak("Please add B N B for gas");  
-            throw new Error("NO_GAS");
-        }  
-
-        // 🔥 FIX 1 — REAL CLAIM VALUE (UI அல்ல ❌ CONTRACT ✔️)
-        const data = await contract.getDashboard(userAddress);
-        const stats = data[0];
-
-        const rawClaim = stats[7] || 0;
-        const claimable = Number(ethers.utils.formatEther(rawClaim));
-
-        if(claimable < 100){  
-            alert("Minimum 100 DMX required to restake");  
-            speak("Minimum one hundred D M X required");
-            throw new Error("NO_REWARD");
-        }  
-
-        // 🔁 REMINDER
-        reminder = setInterval(()=>{
-            if(window.txPending){
-                speak("Please check your wallet");
-            }
-        },15000);
-
-        // 🚀 TX
-        btn.innerText = "Processing...";  
-
-        const tx = await contract.restake();  
-
-        // 🔥 FIX 2 — TIMEOUT PROTECTION (stuck ஆகாதது)
-        const receipt = await Promise.race([
-            tx.wait(),
-            new Promise((_, reject) =>
-                setTimeout(() => reject(new Error("TIMEOUT")), 60000)
-            )
-        ]);
-
-        clearInterval(reminder);
-
-        // 🎆 FIREWORKS
-        launchFireworks();
-
-        // 📳 VIBRATION
-        if(navigator.vibrate){
-            navigator.vibrate([100,50,100]);
+        if (signerAddress.toLowerCase() !== userAddress.toLowerCase()) {
+            alert("Wallet account mismatch. Please reconnect wallet.");
+            return;
         }
 
-        // 🔊 SUCCESS
+        const balance = await provider.getBalance(userAddress);
+
+        if (balance.eq(0)) {
+            alert("BNB not available for gas");
+            speak("Please add B N B for gas");
+            return;
+        }
+
+        // Read claimable reward from the contract
+        const data = await contract.getDashboard(userAddress);
+        const stats = data[0];
+        const rawClaim = stats[7];
+
+        const claimable = Number(
+            ethers.utils.formatEther(rawClaim)
+        );
+
+        if (claimable < 100) {
+            alert("Minimum 100 DMX required to restake");
+            speak("Minimum one hundred D M X required");
+            return;
+        }
+
+        reminder = setInterval(() => {
+            if (window.txPending) {
+                speak("Please check your wallet");
+            }
+        }, 15000);
+
+        btn.innerText = "Processing...";
+
+        // Request restake transaction
+        const tx = await contract.connect(signer).restake();
+        txSubmitted = true;
+
+        // Once submitted, do not treat a timeout as cancellation.
+        const receiptPromise = tx.wait();
+
+        let timedOut = false;
+
+        const receipt = await Promise.race([
+            receiptPromise,
+            new Promise(resolve => {
+                timeoutId = setTimeout(() => {
+                    timedOut = true;
+                    resolve(null);
+                }, 60000);
+            })
+        ]);
+
+        if (timedOut || !receipt) {
+            if (typeof showToast === "function") {
+                showToast(
+                    "⏳ Transaction still processing. Check your wallet.",
+                    "#f59e0b"
+                );
+            }
+
+            speak("Transaction is still processing");
+
+            btn.innerText = "Transaction Pending...";
+
+            // Keep the action locked until the submitted transaction settles.
+            try {
+                const finalReceipt = await receiptPromise;
+
+                if (finalReceipt && finalReceipt.status === 1) {
+                    showRestakeSuccess();
+                } else {
+                    if (typeof showToast === "function") {
+                        showToast("Restake transaction failed", "red");
+                    }
+                }
+            } catch (e) {
+                console.error("Restake receipt error:", e);
+
+                if (typeof showToast === "function") {
+                    showToast(
+                        "Transaction status unknown. Check the block explorer.",
+                        "#f59e0b"
+                    );
+                }
+            }
+
+            return;
+        }
+
+        if (receipt.status !== 1) {
+            throw new Error("RESTake_TX_FAILED");
+        }
+
+        showRestakeSuccess();
+
+    } catch (error) {
+        console.error("Restake error:", error);
+
+        if (error.code === 4001 || error.code === "ACTION_REJECTED") {
+            alert("Transaction cancelled");
+            speak("Transaction cancelled");
+        } else if (error.message === "RESTake_TX_FAILED") {
+            alert("Restake transaction failed");
+            speak("Restake transaction failed");
+        } else {
+            alert(
+                txSubmitted
+                    ? "Transaction status may be unknown. Check the block explorer before retrying."
+                    : "Restake failed"
+            );
+        }
+
+    } finally {
+        if (reminder) clearInterval(reminder);
+        if (timeoutId) clearTimeout(timeoutId);
+
+        // Do not unlock while a submitted transaction is still unresolved.
+        if (!txSubmitted) {
+            window.txPending = false;
+            btn.disabled = false;
+            btn.innerText = originalText;
+            btn.classList.remove("animate-pulse");
+        } else {
+            // The transaction path below releases the lock after receipt handling.
+            window.txPending = false;
+            btn.disabled = false;
+            btn.classList.remove("animate-pulse");
+
+            if (btn.innerText !== "🎉 Bonus Added") {
+                btn.innerText = originalText;
+            }
+        }
+    };
+
+    function showRestakeSuccess() {
+        if (typeof launchFireworks === "function") {
+            launchFireworks();
+        }
+
+        if (navigator.vibrate) {
+            navigator.vibrate([100, 50, 100]);
+        }
+
         speak("Restake successful");
 
-        // 🍞 TOAST (உங்க system இருந்தா use ஆகும்)
-        if(typeof showToast === "function"){
+        if (typeof showToast === "function") {
             showToast("♻️ Restake Successful", "#16a34a");
         }
 
-        // 🔘 BUTTON SUCCESS
-        btn.innerText = "🎉 Bonus Added";  
+        btn.innerText = "🎉 Bonus Added";
         btn.classList.add("animate-pulse");
 
-        // 🔄 REFRESH
-        setTimeout(()=>{
-            refreshData();
-        },1500);
-
-        setTimeout(()=>{
+        setTimeout(() => {
+            if (typeof refreshData === "function") {
+                refreshData();
+            }
             btn.classList.remove("animate-pulse");
             btn.innerText = originalText;
-        },3000);
+        }, 3000);
+    }
+};
 
-    } catch (error) {  
-
-        console.error("Restake error:", error);  
-
-        if(error.message === "TIMEOUT"){
-            if(typeof showToast === "function"){
-                showToast("⏳ Still processing on blockchain", "#f59e0b");
-            }
-            speak("Transaction is still processing");
-        }
-        else if(error.code === 4001){  
-            alert("Transaction cancelled");  
-            speak("Transaction cancelled");
-        }
-        else if(
-            error.message !== "NO_GAS" &&
-            error.message !== "NO_REWARD"
-        ){
-            alert("Transaction failed");  
-            speak("Transaction failed");
-        }
-
-    } finally {  
-
-        window.txPending = false;  
-
-        if(reminder) clearInterval(reminder);
-
-        btn.disabled = false;  
-        btn.innerText = originalText;  
-        btn.classList.remove("animate-pulse");
-    }  
-}
       
 // ==============================
 // 🔹 COPY REFERRAL (IMPROVED)
