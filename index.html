@@ -2606,7 +2606,7 @@ End: ${end.toLocaleDateString()}
 ${isFinished ? "Completed ✅" : days + " Days Left"}      
 </div>      
 
-${isFinished ? `<button onclick="withdrawStake(${i})"
+${isFinished ? `<button onclick="withdrawStake(${i}, this)"
 class="mt-2 w-full bg-purple-600 py-2 rounded-lg text-xs font-bold">
 💰 Withdraw Principal
 </button>` : ""}
