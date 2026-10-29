@@ -1967,65 +1967,67 @@ document.addEventListener("DOMContentLoaded", () => {
 
 });
 
-// ==============================
-// 🔥 GLOBAL PLAN STATE
-// ==============================
+
+ // ==============================
+ // 🔥 GLOBAL PLAN STATE
+ // ==============================
 let selectedPlan = 0;
 
 // ==============================
-// 🔥 PLAN SELECT (FINAL CLEAN)
+// 🔥 PLAN SELECT
 // ==============================
-function selectPlan(el, value){
-
-    document.querySelectorAll(".plan-btn").forEach(btn=>{
+function selectPlan(el, value) {
+    document.querySelectorAll(".plan-btn").forEach(btn => {
         btn.classList.remove("active");
     });
 
-    el.classList.add("active");
-    selectedPlan = Number(value);
+    if (el) el.classList.add("active");
 
-    // 🔥 UI FEEDBACK
+    selectedPlan = Number(value);
     showToast("Plan Selected", "#16a34a");
 }
 
-
 // ==============================
-// 🔥 OPEN STAKE MODAL (FAST)
+// 🔥 OPEN STAKE MODAL
 // ==============================
-async function openStakeBox(){
-
-    if(!contract || !signer){
+async function openStakeBox() {
+    if (!contract || !signer || !userAddress) {
         showToast("Connect wallet first", "red");
         return;
     }
 
-    const amount = document.getElementById("stakeAmount").value.trim();
+    const amountInput = document.getElementById("stakeAmount");
+    const amount = amountInput ? amountInput.value.trim() : "";
 
-    if(!amount || Number(amount) < 2500){
+    if (!amount || !Number.isFinite(Number(amount)) || Number(amount) < 2500) {
         showToast("Minimum 2500 DMX required", "red");
         return;
     }
 
-    if(!selectedPlan){
+    if (![1, 2, 3].includes(selectedPlan)) {
         showToast("Select plan first", "red");
         return;
     }
 
     const modal = document.getElementById("stakeModal");
+    if (!modal) {
+        showToast("Stake modal not found", "red");
+        return;
+    }
+
     modal.classList.remove("hidden");
     modal.classList.add("flex");
 
     document.getElementById("stakeModalAmount").innerText = amount + " DMX";
 
-    try{
-        const usdt = await contract.getUSDTFromDMX(
-            ethers.utils.parseUnits(amount, 18)
-        );
+    try {
+        const amountWei = ethers.utils.parseUnits(amount, 18);
+        const usdt = await contract.getUSDTFromDMX(amountWei);
 
         document.getElementById("stakeModalUSDT").innerText =
             "≈ " + Number(ethers.utils.formatEther(usdt)).toFixed(2) + " USDT";
-
-    }catch{
+    } catch (e) {
+        console.log("Stake estimate error:", e);
         document.getElementById("stakeModalUSDT").innerText = "Calculating...";
     }
 
@@ -2039,257 +2041,355 @@ async function openStakeBox(){
         "Duration: " + planText[selectedPlan];
 }
 
-        
 // ==============================
-// 🚀 HANDLE STAKE (FINAL + WALLET PANEL)
+// 🚀 HANDLE STAKE
 // ==============================
-window.handleStake = async function(type, event){
+window.handleStake = async function(type, event) {
+    if (window.txPending) return;
 
-if (window.txPending) return;  
-window.txPending = true;  
+    window.txPending = true;
 
-const btn = event?.currentTarget;  
-const msg = document.getElementById("stakeMessageBox");  
+    const btn = event?.currentTarget;
+    const msg = document.getElementById("stakeMessageBox");
 
-let interval = null;  
-let seconds = 120; // ⏱️ increased time  
+    let interval = null;
+    let seconds = 120;
+    let operationSucceeded = false;
 
-try{  
+    // Countdown shows waiting status only.
+    // It NEVER cancels an already-started wallet transaction.
+    const stopCountdown = () => {
+        if (interval !== null) {
+            clearInterval(interval);
+            interval = null;
+        }
+    };
 
-    if(!contract || !signer || !userAddress){  
-        showToast("Wallet not connected", "red");  
-        return;  
-    }  
+    const showWaitingMessage = (text) => {
+        if (!msg) return;
+        msg.style.display = "block";
+        msg.innerText = text;
+    };
 
-    // 🔥 GAS CHECK  
-    const bnbBal = await provider.getBalance(userAddress);  
-    if(bnbBal.eq(0)){  
-        showToast("BNB required for gas", "red");  
-        return;  
-    }  
+    try {
+        // =========================
+        // 🔐 WALLET CHECK
+        // =========================
+        if (!contract || !signer || !userAddress || !provider) {
+            showToast("Connect wallet first", "red");
+            return;
+        }
 
-    // 🔥 AMOUNT  
-    const amountInput = document.getElementById("stakeAmount").value.trim();  
-    if (!amountInput || Number(amountInput) < 2500) {  
-        showToast("Minimum 2500 DMX", "red");  
-        return;  
-    }  
+        // Verify the connected signer matches the selected account.
+        const signerAddress = await signer.getAddress();
 
-    const amountWei = ethers.utils.parseUnits(amountInput, 18);  
+        if (signerAddress.toLowerCase() !== userAddress.toLowerCase()) {
+            showToast("Wallet account mismatch. Reconnect wallet.", "red");
+            return;
+        }
 
-    // 🔥 PLAN  
-    let duration = 0;  
-    if (selectedPlan === 1) duration = 7776000;  
-    else if (selectedPlan === 2) duration = 15552000;  
-    else if (selectedPlan === 3) duration = 31536000;  
+        // =========================
+        // ⛽ BNB GAS CHECK
+        // =========================
+        const bnbBal = await provider.getBalance(userAddress);
 
-    if(duration === 0){  
-        showToast("Select plan", "red");  
-        return;  
-    }  
+        if (bnbBal.eq(0)) {
+            showToast("BNB required for gas", "red");
+            speak("Please add B N B for gas");
+            return;
+        }
 
-    // 🔥 REF  
-    const DEFAULT_REF = "0x53ba2d865be750d0e2d4d01bcb0a46ec1684c46b";  
-    let refInput = document.getElementById("refAddress")?.value;  
-    let ref = (refInput && ethers.utils.isAddress(refInput)) ? refInput : DEFAULT_REF;  
+        // =========================
+        // 💰 AMOUNT CHECK
+        // =========================
+        const amountInput = document.getElementById("stakeAmount");
+        const amountText = amountInput ? amountInput.value.trim() : "";
 
-    const contractWithSigner = contract.connect(signer);  
+        if (
+            !amountText ||
+            !Number.isFinite(Number(amountText)) ||
+            Number(amountText) < 2500
+        ) {
+            showToast("Minimum 2500 DMX", "red");
+            return;
+        }
 
-    // UI update  
-    if(btn){  
-        btn.disabled = true;  
-        btn.innerText = "Processing...";  
-    }  
+        const amountWei = ethers.utils.parseUnits(amountText, 18);
 
-    if(msg){
-    msg.style.display = "block";
-    msg.innerHTML = `
-⏳ Waiting for approval...<br>
-<small>Check your wallet</small><br>
-<span id='cd'>120</span>s
-`;
-} // ✅ IMPORTANT
+        // =========================
+        // 📅 PLAN DURATION
+        // =========================
+        let duration = 0;
 
-// 🔔 POPUP
-//alert("⚠️ Please open your wallet app and approve");
+        if (selectedPlan === 1) duration = 7776000;
+        else if (selectedPlan === 2) duration = 15552000;
+        else if (selectedPlan === 3) duration = 31536000;
 
-// 🔥 SHOW WALLET PANEL (GLOBAL)
-// if(typeof showWalletPanel === "function"){
-//     showWalletPanel();
-// }
+        if (duration === 0) {
+            showToast("Select plan", "red");
+            return;
+        }
 
+        // =========================
+        // 👥 REFERRAL
+        // =========================
+        const DEFAULT_REF = "0x53ba2d865be750d0e2d4d01bcb0a46ec1684c46b";
 
-    // ⏱️ TIMER  
-    interval = setInterval(() => {  
+        const refInput = document.getElementById("refAddress")?.value?.trim();
 
-        seconds--;  
+        const ref = (
+            refInput && ethers.utils.isAddress(refInput)
+        ) ? refInput : DEFAULT_REF;
 
-        const cd = document.getElementById("cd");  
-        if(cd) cd.innerText = seconds;  
+        const contractWithSigner = contract.connect(signer);
 
-        if(seconds <= 0){  
+        if (btn) {
+            btn.disabled = true;
+            btn.innerText = "Processing...";
+        }
 
-            clearInterval(interval);  
+        // =========================
+        // ⏱️ 120-SECOND STATUS TIMER
+        // =========================
+        seconds = 120;
 
-            if(msg){  
-                msg.innerText = "❌ Not approved";  
-            }  
+        showWaitingMessage(
+            "⏳ Waiting for wallet confirmation...\n" +
+            "Check your wallet app.\n" +
+            "Time remaining: 120s"
+        );
 
-            showToast("Transaction not approved", "red");  
+        interval = setInterval(() => {
+            seconds--;
 
-            // hide wallet panel  
-            if(typeof hideWalletPanel === "function"){  
-                hideWalletPanel();  
-            }  
+            if (seconds > 0) {
+                showWaitingMessage(
+                    "⏳ Waiting for wallet confirmation...\n" +
+                    "Check your wallet app.\n" +
+                    "Time remaining: " + seconds + "s"
+                );
+            } else {
+                stopCountdown();
 
-            // RESET  
-            window.txPending = false;  
+                // IMPORTANT:
+                // This is NOT a cancellation.
+                // The wallet prompt or blockchain transaction may still be pending.
+                showWaitingMessage(
+                    "⌛ Still waiting for confirmation.\n" +
+                    "Please check your wallet.\n" +
+                    "This timer does not cancel the transaction."
+                );
+            }
+        }, 1000);
 
-            if(btn){  
-                btn.disabled = false;  
-                btn.innerText = "Stake";  
-            }  
+        // =========================
+        // 🔷 DMX STAKE
+        // =========================
+        if (type === "DMX") {
+            const token = new ethers.Contract(
+                DMX_ADDR,
+                TOKEN_ABI,
+                signer
+            );
 
-            setTimeout(()=>{  
-                if(msg) msg.style.display = "none";  
-            },2000);  
-        }  
+            const tokenBal = await token.balanceOf(userAddress);
 
-    }, 1000);  
+            if (tokenBal.lt(amountWei)) {
+                showToast("Not enough DMX", "red");
+                return;
+            }
 
-    // =========================  
-    // 🔷 DMX  
-    // =========================  
-    if(type === "DMX"){  
+            const allowance = await token.allowance(
+                userAddress,
+                STAKE_ADDR
+            );
 
-        const token = new ethers.Contract(DMX_ADDR, TOKEN_ABI, signer);  
+            if (allowance.lt(amountWei)) {
+                showWaitingMessage(
+                    "⏳ Waiting for DMX approval...\nCheck your wallet."
+                );
 
-        const tokenBal = await token.balanceOf(userAddress);  
-        if(tokenBal.lt(amountWei)){  
-            clearInterval(interval);  
-            showToast("Not enough DMX", "red");  
-            return;  
-        }  
+                const approveTx = await token.approve(
+                    STAKE_ADDR,
+                    ethers.constants.MaxUint256
+                );
 
-        const allowance = await token.allowance(userAddress, STAKE_ADDR);  
+                showWaitingMessage(
+                    "⏳ DMX approval submitted.\nWaiting for blockchain confirmation..."
+                );
 
-        if(allowance.lt(amountWei)){  
-            const approveTx = await token.approve(STAKE_ADDR, ethers.constants.MaxUint256);  
-            await approveTx.wait();  
-        }  
+                await approveTx.wait();
+            }
 
-        const tx = await contractWithSigner.stakeDMX(amountWei, duration, ref);  
-        await tx.wait();  
-    }  
+            showWaitingMessage(
+                "⏳ Waiting for Stake confirmation...\nCheck your wallet."
+            );
 
-    // =========================  
-    // 🔷 USDT  
-    // =========================  
-    else{  
+            const tx = await contractWithSigner.stakeDMX(
+                amountWei,
+                duration,
+                ref
+            );
 
-        const usdt = new ethers.Contract(USDT_ADDR, TOKEN_ABI, signer);  
+            showWaitingMessage(
+                "⏳ Stake transaction submitted.\nWaiting for blockchain confirmation..."
+            );
 
-        const requiredUSDT = await contract.getUSDTFromDMX(amountWei);  
+            await tx.wait();
+        }
 
-        const usdtBal = await usdt.balanceOf(userAddress);  
-        if(usdtBal.lt(requiredUSDT)){  
-            clearInterval(interval);  
-            showToast("Not enough USDT", "red");  
-            return;  
-        }  
+        // =========================
+        // 🔷 USDT STAKE
+        // =========================
+        else if (type === "USDT") {
+            const usdt = new ethers.Contract(
+                USDT_ADDR,
+                TOKEN_ABI,
+                signer
+            );
 
-        let allowance = await usdt.allowance(userAddress, STAKE_ADDR);  
+            const requiredUSDT = await contract.getUSDTFromDMX(amountWei);
 
-        if(allowance.lt(requiredUSDT)){  
-            const approveTx = await usdt.approve(STAKE_ADDR, ethers.constants.MaxUint256);  
-            await approveTx.wait();  
-        }  
+            const usdtBal = await usdt.balanceOf(userAddress);
 
-        const tx = await contractWithSigner.stakeUSDT(amountWei, duration, ref);  
-        await tx.wait();  
-    }  
+            if (usdtBal.lt(requiredUSDT)) {
+                showToast("Not enough USDT", "red");
+                return;
+            }
 
-    // =========================  
-    // ✅ SUCCESS  
-    // =========================  
-    clearInterval(interval);  
+            const allowance = await usdt.allowance(
+                userAddress,
+                STAKE_ADDR
+            );
 
-    if(msg){  
-        msg.innerText = "✅ Stake successful";  
-    }  
+            if (allowance.lt(requiredUSDT)) {
+                showWaitingMessage(
+                    "⏳ Waiting for USDT approval...\nCheck your wallet."
+                );
 
-    // 🔥 FIREWORKS  
-    if(typeof launchFireworks === "function"){  
-        launchFireworks();  
-    }  
+                const approveTx = await usdt.approve(
+                    STAKE_ADDR,
+                    ethers.constants.MaxUint256
+                );
 
-    showToast("Staking Successful 🚀", "#16a34a");  
+                showWaitingMessage(
+                    "⏳ USDT approval submitted.\nWaiting for blockchain confirmation..."
+                );
 
-    // hide wallet panel  
-    if(typeof hideWalletPanel === "function"){  
-        hideWalletPanel();  
-    }  
+                await approveTx.wait();
+            }
 
-    if(btn){  
-        btn.innerText = "Success ✅";  
-    }  
+            showWaitingMessage(
+                "⏳ Waiting for Stake confirmation...\nCheck your wallet."
+            );
 
-    setTimeout(()=>{  
-        closeStakeBox();  
-        refreshData();  
-    },1500);  
+            const tx = await contractWithSigner.stakeUSDT(
+                amountWei,
+                duration,
+                ref
+            );
 
-}catch(e){  
+            showWaitingMessage(
+                "⏳ Stake transaction submitted.\nWaiting for blockchain confirmation..."
+            );
 
-    console.log(e);  
-    clearInterval(interval);  
+            await tx.wait();
+        } else {
+            showToast("Invalid stake type", "red");
+            return;
+        }
 
-    if(typeof hideWalletPanel === "function"){  
-        hideWalletPanel();  
-    }  
+        // =========================
+        // ✅ SUCCESS
+        // =========================
+        operationSucceeded = true;
+        stopCountdown();
 
-    if(e.code === 4001){  
-        showToast("Transaction cancelled", "red");  
-    }else{  
-        showToast("Transaction failed", "red");  
-    }  
+        showWaitingMessage("✅ Stake successful!");
 
-}finally{  
+        if (typeof launchFireworks === "function") {
+            launchFireworks();
+        }
 
-    window.txPending = false;  
+        showToast("Staking Successful 🚀", "#16a34a");
+        speak("Staking successful");
 
-    if(btn){  
-        btn.disabled = false;  
-        btn.innerText = "Stake";  
-    }  
-}
+        if (typeof hideWalletPanel === "function") {
+            hideWalletPanel();
+        }
 
+        if (btn) {
+            btn.innerText = "Success ✅";
+        }
+
+        setTimeout(() => {
+            closeStakeBox();
+
+            if (typeof refreshData === "function") {
+                refreshData();
+            }
+        }, 1500);
+
+    } catch (e) {
+        console.error("Stake transaction error:", e);
+
+        stopCountdown();
+
+        if (typeof hideWalletPanel === "function") {
+            hideWalletPanel();
+        }
+
+        if (e?.code === 4001 || e?.code === "ACTION_REJECTED") {
+            showToast("Transaction cancelled in wallet", "red");
+            showWaitingMessage("❌ Wallet request rejected.");
+        } else if (
+            e?.code === "INSUFFICIENT_FUNDS" ||
+            e?.code === -32000
+        ) {
+            showToast("Insufficient BNB for gas", "red");
+            showWaitingMessage("❌ Not enough BNB to complete the transaction.");
+        } else {
+            showToast("Transaction failed or confirmation error", "red");
+            showWaitingMessage(
+                "⚠️ Transaction status could not be confirmed. " +
+                "Check the transaction in your wallet or block explorer before retrying."
+            );
+        }
+
+    } finally {
+        stopCountdown();
+        window.txPending = false;
+
+        if (btn) {
+            btn.disabled = false;
+
+            if (!operationSucceeded) {
+                btn.innerText = "Stake";
+            }
+        }
+    }
 };
 
 // ==============================
-// CLOSE MODAL
+// ❌ CLOSE STAKE MODAL
 // ==============================
-function closeStakeBox(){
+function closeStakeBox() {
+    const modal = document.getElementById("stakeModal");
+    if (!modal) return;
 
-const modal = document.getElementById("stakeModal");  
-if(!modal) return;  
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
 
-// 🔥 CLOSE MODAL  
-modal.classList.add("hidden");  
-modal.classList.remove("flex");  
+    if (window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+    }
 
-// 🔊 STOP VOICE  
-if(window.speechSynthesis){  
-    speechSynthesis.cancel();  
-}  
+    const msgBox = document.getElementById("stakeMessageBox");
 
-// 🔥 CLEAR MESSAGE  
-const msgBox = document.getElementById("stakeMessageBox");  
-if(msgBox){  
-    msgBox.innerText = "";  
-    msgBox.style.display = "none";  
-}
-
+    if (msgBox) {
+        msgBox.innerText = "";
+        msgBox.style.display = "none";
+    }
 }
 
 // ==============================
